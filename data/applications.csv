@@ -1,0 +1,5 @@
+application_id,full_name,requested_amount,credit_score,monthly_income,monthly_debts,kyc_status,submitted_documents
+APP001,John Doe,25000,659,5500.00,1114.30,EXPIRED,Government ID (Expired);Paystubs (Jan 2026);Tax Return (2025)
+APP002,Jane Smith,45000,750,9200.00,1702.00,COMPLETE,Government ID;Paystubs (Jan 2026);W-2
+APP003,Robert Chen,120000,580,4100.00,2132.00,PENDING,None
+APP004,Sarah Jenkins,15000,710,6000.00,2800.00,COMPLETE,Government ID;Paystubs (Jan 2026)
