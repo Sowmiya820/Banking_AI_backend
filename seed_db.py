@@ -1,66 +1,83 @@
 import asyncio
-from sqlalchemy import select
-from app.db.session import AsyncSessionLocal
-from app.db.models.models import Role, DepositProduct
+from passlib.context import CryptContext
+from sqlalchemy.future import select
+
+from app.db.session import AsyncSessionLocal, engine
+from app.db.models.models import Base, User, Role, ModulePermission
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
 
 
-async def seed():
-    async with AsyncSessionLocal() as session:
-        # 1. Seed Roles safely
-        desired_roles = ["ADMIN", "LOAN_OFFICER", "COMPLIANCE_OFFICER", "CUSTOMER"]
-        
-        # Get all existing role names in one query
-        existing_roles_res = await session.execute(select(Role.role_name))
-        existing_role_names = set(existing_roles_res.scalars().all())
+async def seed_data():
+    print("⏳ Creating database tables if they don't exist...")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
-        added_roles = False
-        for role_name in desired_roles:
-            if role_name not in existing_role_names:
-                session.add(Role(role_name=role_name, description=f"{role_name} access level"))
-                added_roles = True
-
-        if added_roles:
-            await session.commit()
-            print("✅ New roles seeded!")
-        else:
-            print("ℹ️ Roles already exist, skipping.")
-
-        # 2. Seed Deposit Products safely
-        products = [
-            {
-                "product_name": "Flexi Savings Account",
-                "category": "SAVINGS",
-                "interest_rate": 4.5,
-                "min_amount": 1000.0,
-                "description": "High yield flexible savings with instant liquidity."
-            },
-            {
-                "product_name": "Fixed Deposit Super 1Y",
-                "category": "TERM_DEPOSIT",
-                "interest_rate": 7.25,
-                "min_amount": 10000.0,
-                "min_tenure_months": 12,
-                "max_tenure_months": 12,
-                "description": "1-Year Fixed Deposit with maximum returns.",
-                "penalty_terms": "1% interest penalty on premature withdrawal."
-            }
+    async with AsyncSessionLocal() as db:
+        print("🌱 Seeding Roles...")
+        roles = [
+            ("ADMIN", "System Administrator with full access"),
+            ("LOAN_OFFICER", "Loan Officer - Access to Module A1 & A3"),
+            ("RELATIONSHIP_MANAGER", "Relationship Manager - Access to Module A2 & A4"),
         ]
 
-        existing_prods_res = await session.execute(select(DepositProduct.product_name))
-        existing_prod_names = set(existing_prods_res.scalars().all())
+        role_map = {}
+        for role_name, description in roles:
+            stmt = select(Role).where(Role.role_name == role_name)
+            result = await db.execute(stmt)
+            existing_role = result.scalars().first()
 
-        added_prods = False
-        for prod_data in products:
-            if prod_data["product_name"] not in existing_prod_names:
-                session.add(DepositProduct(**prod_data))
-                added_prods = True
+            if not existing_role:
+                new_role = Role(role_name=role_name, description=description)
+                db.add(new_role)
+                await db.flush()
+                role_map[role_name] = new_role
+                print(f"   ✓ Created Role: {role_name}")
+            else:
+                role_map[role_name] = existing_role
 
-        if added_prods:
-            await session.commit()
-            print("✅ Deposit products seeded!")
+        print("🌱 Seeding Module Permissions...")
+        default_permissions = [
+            ("ADMIN", "A1", True), ("ADMIN", "A2", True), ("ADMIN", "A3", True), ("ADMIN", "A4", True),
+            ("LOAN_OFFICER", "A1", True), ("LOAN_OFFICER", "A2", False), ("LOAN_OFFICER", "A3", True), ("LOAN_OFFICER", "A4", False),
+            ("RELATIONSHIP_MANAGER", "A1", False), ("RELATIONSHIP_MANAGER", "A2", True), ("RELATIONSHIP_MANAGER", "A3", True), ("RELATIONSHIP_MANAGER", "A4", True),
+        ]
+
+        for r_name, m_code, is_allowed in default_permissions:
+            stmt = select(ModulePermission).where(
+                ModulePermission.role_name == r_name,
+                ModulePermission.module_code == m_code
+            )
+            res = await db.execute(stmt)
+            perm = res.scalars().first()
+
+            if not perm:
+                db.add(ModulePermission(role_name=r_name, module_code=m_code, is_allowed=is_allowed))
+
+        print("🌱 Seeding Default Admin User...")
+        stmt = select(User).where(User.username == "admin")
+        result = await db.execute(stmt)
+        admin_user = result.scalars().first()
+
+        if not admin_user:
+            admin_user = User(
+                username="admin",
+                email="admin@bank.com",
+                hashed_password=hash_password("AdminPass123!"),
+                is_active=True,
+                role_id=role_map["ADMIN"].role_id
+            )
+            db.add(admin_user)
+            print("   ✓ Created Admin User: 'admin' (Password: AdminPass123!)")
         else:
-            print("ℹ️ Deposit products already exist, skipping.")
+            print("   ℹ Admin user already exists.")
+
+        await db.commit()
+        print("\n✅ DATABASE SEEDING COMPLETED SUCCESSFULLY!\n")
 
 
 if __name__ == "__main__":
-    asyncio.run(seed())
+    asyncio.run(seed_data())

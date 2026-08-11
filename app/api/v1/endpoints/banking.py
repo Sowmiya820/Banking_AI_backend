@@ -1,3 +1,4 @@
+# app/api/v1/endpoints/banking.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -8,14 +9,13 @@ from app.db.models.models import Customer, User
 from app.services.audit import log_audit_event
 from app.core.dependencies import require_roles
 
-router = APIRouter()
-
+router = APIRouter(prefix="/banking", tags=["Banking Core"])
 
 @router.get("/customers/{customer_id}")
 async def get_customer_360(
     customer_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["LOAN_OFFICER", "RELATIONSHIP_MANAGER", "ADMIN"]))
+    current_user: User = Depends(require_roles(["LOAN OFFICER", "LOAN_OFFICER", "RELATIONSHIP MANAGER", "RELATIONSHIP_MANAGER", "ADMIN"]))
 ):
     stmt = (
         select(Customer)

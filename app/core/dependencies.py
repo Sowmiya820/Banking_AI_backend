@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.db.session import get_db
-from app.db.models.models import User
+from app.db.models.models import User, ModulePermission
 from app.schemas.token import TokenPayload
 
 oauth2_scheme = OAuth2PasswordBearer(
@@ -88,11 +88,20 @@ async def get_current_user_optional(
 def require_roles(allowed_roles: List[str]):
     """Role-Based Access Control (RBAC) dependency factory."""
     async def role_checker(current_user: User = Depends(get_current_user)) -> User:
-        user_role = current_user.role.role_name if current_user.role else None
-        
-        allowed_normalized = [r.upper() for r in allowed_roles]
-        
-        if not user_role or user_role.upper() not in allowed_normalized:
+        # Safely extract the role string across different object types
+        user_role = ""
+        if isinstance(current_user.role, str):
+            user_role = current_user.role
+        elif hasattr(current_user.role, "role_name"):
+            user_role = getattr(current_user.role, "role_name", "") or ""
+        elif hasattr(current_user.role, "name"):
+            user_role = getattr(current_user.role, "name", "") or ""
+
+        # Normalize both stored role and allowed roles for reliable matching
+        user_role_normalized = user_role.upper().replace(" ", "_")
+        allowed_normalized = [r.upper().replace(" ", "_") for r in allowed_roles]
+
+        if not user_role or user_role_normalized not in allowed_normalized:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied. Required role(s): {allowed_roles}. Your role: {user_role or 'None'}"
@@ -100,3 +109,47 @@ def require_roles(allowed_roles: List[str]):
         return current_user
 
     return role_checker
+
+
+def require_module_access(module_code: str):
+    """
+    Module Access Security Dependency.
+    Checks if the current user's role has access granted to module_code (e.g. 'A1', 'A2', 'A3', 'A4').
+    """
+    async def module_checker(
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+    ) -> User:
+        # Extract role name
+        user_role = ""
+        if isinstance(current_user.role, str):
+            user_role = current_user.role
+        elif hasattr(current_user.role, "role_name"):
+            user_role = getattr(current_user.role, "role_name", "") or ""
+        elif hasattr(current_user.role, "name"):
+            user_role = getattr(current_user.role, "name", "") or ""
+
+        user_role_normalized = user_role.upper().replace(" ", "_")
+
+        # ADMINs bypass module level restriction
+        if user_role_normalized == "ADMIN":
+            return current_user
+
+        # Query module permission rule
+        stmt = select(ModulePermission).where(
+            ModulePermission.role_name == user_role_normalized,
+            ModulePermission.module_code == module_code.upper()
+        )
+        res = await db.execute(stmt)
+        perm = res.scalars().first()
+
+        # If a specific rule exists and is explicitly disabled, block access
+        if perm and not perm.is_allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access to Module {module_code.upper()} is restricted for role '{user_role_normalized}'."
+            )
+
+        return current_user
+
+    return module_checker

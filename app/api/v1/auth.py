@@ -19,8 +19,7 @@ async def register_user(
     user_in: UserCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Register a new bank officer or analyst."""
-    # Check if username or email already exists
+    # Check if username or email exists
     stmt = select(User).where((User.username == user_in.username) | (User.email == user_in.email))
     existing_user = (await db.execute(stmt)).scalar_one_or_none()
 
@@ -30,13 +29,13 @@ async def register_user(
             detail="Username or email already registered."
         )
 
-    # Fetch role
-    role_name = user_in.role_name.upper()
+    # Normalize role name (e.g., "Loan Officer" -> "LOAN_OFFICER")
+    role_name = user_in.role_name.strip().upper().replace(" ", "_")
     role_stmt = select(Role).where(Role.role_name == role_name)
     role = (await db.execute(role_stmt)).scalar_one_or_none()
 
     if not role:
-        role = Role(role_name=role_name, description=f"Role for {role_name}")
+        role = Role(role_name=role_name, description=f"System Role for {role_name}")
         db.add(role)
         await db.flush()
 
@@ -50,8 +49,10 @@ async def register_user(
     db.add(new_user)
     await db.commit()
     
-    # Reload with role relationship for schema serialization
-    res = await db.execute(select(User).options(selectinload(User.role)).where(User.user_id == new_user.user_id))
+    # Reload user with role relation loaded
+    res = await db.execute(
+        select(User).options(selectinload(User.role)).where(User.user_id == new_user.user_id)
+    )
     created_user = res.scalar_one()
 
     return UserResponse(
@@ -68,7 +69,6 @@ async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
-    """Authenticate via OAuth2 Form Data and return JWT token."""
     result = await db.execute(
         select(User).options(selectinload(User.role)).where(User.username == form_data.username)
     )
@@ -99,11 +99,10 @@ async def login_for_access_token(
 
 @router.get("/me", response_model=UserResponse)
 async def read_users_me(current_user: User = Depends(get_current_user)):
-    """Return profile of currently logged-in user."""
     return UserResponse(
         user_id=current_user.user_id,
         username=current_user.username,
         email=current_user.email,
-        role_name=current_user.role.role_name,
+        role_name=current_user.role.role_name if current_user.role else "USER",
         is_active=current_user.is_active
     )
