@@ -72,6 +72,34 @@ def load_dataset(filename: str) -> List[dict]:
         return []
 
 
+def update_application_decision_in_csv(application_id: str, new_decision: str) -> bool:
+    """Persists updated decision to loan_applications.csv and invalidates cache."""
+    file_path = locate_csv_file("loan_applications.csv")
+    if not file_path:
+        return False
+
+    try:
+        df = pd.read_csv(file_path)
+        # Match application_id regardless of column casing
+        id_col = next((col for col in df.columns if col.strip().lower() == "application_id"), None)
+        if not id_col:
+            return False
+
+        dec_col = next((col for col in df.columns if col.strip().lower() in ["decision_label", "decision"]), "decision_label")
+        
+        mask = df[id_col].astype(str).str.strip().str.upper() == str(application_id).strip().upper()
+        if mask.any():
+            df.loc[mask, dec_col] = new_decision
+            df.to_csv(file_path, index=False)
+            # Invalidate cache so next fetch gets updated data
+            if "loan_applications.csv" in _DATASET_CACHE:
+                del _DATASET_CACHE["loan_applications.csv"]
+            return True
+    except Exception as e:
+        print(f"[CSV WRITE WARNING] Failed updating decision in CSV for {application_id}: {e}")
+    return False
+
+
 def extract_customer_name(cust: dict, app: dict = None) -> str:
     """Robust extractor matching name_1, short_name, or full_name from customer data."""
     if not cust:
@@ -305,9 +333,7 @@ async def get_applications(
 
         app_id = str(app.get("application_id", "")).strip()
         
-        # FIX: Extract actual customer name using name_1 / short_name
         full_name = extract_customer_name(cust, app)
-        
         credit_score = int(clean_currency(app.get("credit_score") or cust.get("credit_score") or 0))
         
         raw_req = app.get("requested_amount", 0)
@@ -319,7 +345,9 @@ async def get_applications(
         tenure = int(clean_currency(app.get("tenure") or app.get("tenure_months") or 12))
 
         rule_eval = evaluate_app_rules(app, cust, c_loans)
-        app_decision = app.get("decision_label") or rule_eval["decision"]
+        
+        # FIX: Prioritize rule engine decision over stale CSV 'decision_label'
+        app_decision = rule_eval["decision"]
         app_risk = rule_eval["risk_level"]
         app_needs_review = rule_eval["needs_review"]
 
@@ -407,7 +435,6 @@ async def evaluate_loan(
     raw_amount = app.get("requested_amount", 0)
     symbol = detect_currency_symbol(raw_amount)
 
-    # FIX: Correct column extractions from customers.csv, loans.csv, and limits_collateral.csv
     full_name = extract_customer_name(cust, app)
     income = clean_currency(cust.get("monthly_income") or cust.get("income") or 0)
     employment = str(cust.get("employment_type") or cust.get("employment_status") or cust.get("employment") or "Employed").strip()
@@ -419,11 +446,9 @@ async def evaluate_loan(
     existing_emi = clean_currency(app.get("existing_emi") or app.get("monthly_debts") or 0)
     purpose = str(app.get("purpose") or app.get("loan_purpose") or "Personal Loan").strip()
 
-    # FIX: Check "outstanding" from loans.csv
     total_outstanding = sum([clean_currency(l.get("outstanding") or l.get("outstanding_balance") or l.get("amount") or 0) for l in customer_loans])
     max_dpd = max([int(clean_currency(l.get("days_past_due") or l.get("dpd") or 0)) for l in customer_loans], default=0)
 
-    # FIX: Check "approved_limit" and "utilized" from limits_collateral.csv
     approved_limit = clean_currency(limit.get("approved_limit") or limit.get("limit") or 0)
     utilized_limit = clean_currency(limit.get("utilized") or limit.get("utilized_limit") or total_outstanding)
     available_limit = clean_currency(limit.get("available") or max(0.0, approved_limit - utilized_limit))
@@ -433,6 +458,10 @@ async def evaluate_loan(
     dti_ratio = round(((existing_emi / income) * 100), 2) if income > 0 else 0.0
 
     rule_eval = evaluate_app_rules(app, cust, customer_loans)
+    final_decision = rule_eval["decision"]
+
+    # FIX: Persist updated decision back to loan_applications.csv
+    update_application_decision_in_csv(target_id, final_decision)
 
     groq_client = get_groq_client()
     ai_result = None
@@ -442,7 +471,7 @@ async def evaluate_loan(
         You are a Bank Credit Risk Underwriter. Explain the pre-calculated decision for this loan application.
 
         DETERMINISTIC RULE RESULTS (DO NOT OVERRIDE):
-        - Calculated Decision: {rule_eval['decision']}
+        - Calculated Decision: {final_decision}
         - Identified Risk Reasons: {rule_eval['risks']}
         - Missing Required Information: {rule_eval['missing']}
 
@@ -473,10 +502,10 @@ async def evaluate_loan(
 
         Return ONLY strict JSON with these keys:
         {{
-          "recommendation": "{rule_eval['decision']}",
+          "recommendation": "{final_decision}",
           "risk_reasons": {json.dumps(rule_eval['risks'])},
           "missing_information": {json.dumps(rule_eval['missing'])},
-          "explanation": "A concise 2-3 sentence plain language explanation of why this application was {rule_eval['decision']}.",
+          "explanation": "A concise 2-3 sentence plain language explanation of why this application was {final_decision}.",
           "recommended_action": "Clear, single actionable next step for the loan officer."
         }}
         """
@@ -496,7 +525,7 @@ async def evaluate_loan(
             print(f"[AI UNDERWRITER WARNING] Groq call failed: {e}")
 
     if not ai_result:
-        rec = rule_eval["decision"]
+        rec = final_decision
         if rec == "REFER":
             rec_action = "Review pending KYC (Know Your Customer) documents and re-verify DTI (Debt-to-Income) ratio with applicant."
         elif rec == "REJECT":
