@@ -418,8 +418,6 @@ async def update_application_permissions(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to save application permissions: {str(e)}"
         )
-
-
 # ==========================================
 # 4. POLICY DOCUMENT MANAGEMENT
 # ==========================================
@@ -430,6 +428,7 @@ async def list_policy_documents(
     current_user: User = Depends(require_roles(["ADMIN"])),
 ):
     try:
+        # Fetch all policies so React can filter Active vs Deleted
         stmt = select(PolicyDocument).order_by(PolicyDocument.uploaded_at.desc())
         result = await db.execute(stmt)
         policies = result.scalars().all()
@@ -454,7 +453,6 @@ async def list_policy_documents(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch policy documents: {str(e)}"
         )
-
 
 @router.post("/policies")
 @router.post("/policies/upload")
@@ -521,15 +519,18 @@ async def upload_policy_document(
         )
 
 
-@router.delete("/policies/{policy_id}")
 @router.patch("/policies/{policy_id}/archive")
 async def archive_policy_document(
     policy_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["ADMIN"])),
 ):
+    """Toggles policy status between ACTIVE and ARCHIVED."""
     try:
-        stmt = select(PolicyDocument).where(PolicyDocument.document_id == policy_id)
+        stmt = select(PolicyDocument).where(
+            PolicyDocument.document_id == policy_id,
+            PolicyDocument.status != "DELETED"
+        )
         res = await db.execute(stmt)
         policy = res.scalars().first()
 
@@ -543,13 +544,14 @@ async def archive_policy_document(
             db=db,
             user_id=current_user.user_id if current_user else None,
             action="ARCHIVE_POLICY",
-            endpoint=f"/admin/policies/{policy_id}",
+            endpoint=f"/admin/policies/{policy_id}/archive",
             details=f"Changed policy #{policy_id} ('{policy.title}') status to {new_status}"
         )
 
         await db.commit()
         return {"message": f"Policy status changed to {new_status}", "policy_id": policy_id, "status": new_status}
     except HTTPException:
+        await db.rollback()
         raise
     except Exception as e:
         await db.rollback()
@@ -560,6 +562,51 @@ async def archive_policy_document(
         )
 
 
+@router.delete("/policies/{policy_id}")
+async def delete_policy_document(
+    policy_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["ADMIN"])),
+):
+    """Soft deletes policy: hides it permanently from UI and vector search without breaking DB foreign keys."""
+    try:
+        stmt = select(PolicyDocument).where(
+            PolicyDocument.document_id == policy_id,
+            PolicyDocument.status != "DELETED"
+        )
+        res = await db.execute(stmt)
+        policy = res.scalars().first()
+
+        if not policy:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy document not found or already deleted")
+
+        policy_title = getattr(policy, 'title', None) or getattr(policy, 'filename', f'Policy #{policy_id}')
+
+        # 🔑 Set status to DELETED (hides it everywhere permanently)
+        policy.status = "DELETED"
+
+        await record_audit_log(
+            db=db,
+            user_id=current_user.user_id if current_user else None,
+            action="DELETE_POLICY",
+            endpoint=f"/admin/policies/{policy_id}",
+            details=f"Marked policy #{policy_id} ('{policy_title}') as DELETED"
+        )
+
+        await db.commit()
+        return {"message": f"Policy '{policy_title}' deleted successfully", "policy_id": policy_id}
+
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error deleting policy {policy_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete policy document: {str(e)}"
+        )
+        
 # ==========================================
 # 5. AUDIT LOGS
 # ==========================================

@@ -2,6 +2,7 @@ from typing import List, Optional
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -53,7 +54,18 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    stmt = select(User).options(selectinload(User.role)).where(User.username == token_data.sub)
+    # Normalize token subject (email or username)
+    identifier = token_data.sub.strip().lower()
+
+    # 🔑 FIX: Check both User.email AND User.username case-insensitively
+    stmt = (
+        select(User)
+        .options(selectinload(User.role))
+        .where(
+            (func.lower(User.email) == identifier) | 
+            (func.lower(User.username) == identifier)
+        )
+    )
     result = await db.execute(stmt)
     user = result.scalars().first()
 

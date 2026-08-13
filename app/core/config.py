@@ -20,9 +20,9 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
 
-    INITIAL_ADMIN_USERNAME: str = "admin"
+    INITIAL_ADMIN_USERNAME: str = "admin1"
     INITIAL_ADMIN_EMAIL: str = "admin@bank.com"
-    INITIAL_ADMIN_PASSWORD: str = "AdminSecurePassword123!"
+    INITIAL_ADMIN_PASSWORD: str = "1234"
 
     LLM_PROVIDER: str = "groq"
     GROQ_API_KEY: str = ""

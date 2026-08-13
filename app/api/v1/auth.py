@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -19,8 +20,14 @@ async def register_user(
     user_in: UserCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    # Check if username or email exists
-    stmt = select(User).where((User.username == user_in.username) | (User.email == user_in.email))
+    clean_email = user_in.email.strip().lower()
+    clean_username = user_in.username.strip()
+
+    # Case-insensitive check if username or email already exists
+    stmt = select(User).where(
+        (func.lower(User.username) == clean_username.lower()) | 
+        (func.lower(User.email) == clean_email)
+    )
     existing_user = (await db.execute(stmt)).scalar_one_or_none()
 
     if existing_user:
@@ -40,8 +47,8 @@ async def register_user(
         await db.flush()
 
     new_user = User(
-        username=user_in.username,
-        email=user_in.email,
+        username=clean_username,
+        email=clean_email,
         hashed_password=get_password_hash(user_in.password),
         role_id=role.role_id,
         is_active=True
@@ -59,7 +66,7 @@ async def register_user(
         user_id=created_user.user_id,
         username=created_user.username,
         email=created_user.email,
-        role_name=created_user.role.role_name,
+        role_name=created_user.role.role_name if created_user.role else role_name,
         is_active=created_user.is_active
     )
 
@@ -69,31 +76,46 @@ async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
+    # Clean and normalize input string
+    identifier = form_data.username.strip().lower()
+
+    # Case-insensitive match against both email and username
     result = await db.execute(
-        select(User).options(selectinload(User.role)).where(User.username == form_data.username)
+        select(User)
+        .options(selectinload(User.role))
+        .where(
+            (func.lower(User.email) == identifier) | 
+            (func.lower(User.username) == identifier)
+        )
     )
     user = result.scalars().first()
 
+    # Check user existence and password hash verification
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Incorrect email/username or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user account")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="User account is deactivated. Please contact an administrator."
+        )
+
+    role_name = user.role.role_name if user.role else "USER"
 
     access_token = create_access_token(
-        subject=user.username,
-        role=user.role.role_name
+        subject=user.email,
+        role=role_name
     )
 
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "role": user.role.role_name,
-        "username": user.username
+        "role": role_name,
+        "username": user.username or user.email
     }
 
 

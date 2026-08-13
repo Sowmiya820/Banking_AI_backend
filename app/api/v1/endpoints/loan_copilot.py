@@ -80,7 +80,6 @@ def update_application_decision_in_csv(application_id: str, new_decision: str) -
 
     try:
         df = pd.read_csv(file_path)
-        # Match application_id regardless of column casing
         id_col = next((col for col in df.columns if col.strip().lower() == "application_id"), None)
         if not id_col:
             return False
@@ -91,7 +90,6 @@ def update_application_decision_in_csv(application_id: str, new_decision: str) -
         if mask.any():
             df.loc[mask, dec_col] = new_decision
             df.to_csv(file_path, index=False)
-            # Invalidate cache so next fetch gets updated data
             if "loan_applications.csv" in _DATASET_CACHE:
                 del _DATASET_CACHE["loan_applications.csv"]
             return True
@@ -346,7 +344,6 @@ async def get_applications(
 
         rule_eval = evaluate_app_rules(app, cust, c_loans)
         
-        # FIX: Prioritize rule engine decision over stale CSV 'decision_label'
         app_decision = rule_eval["decision"]
         app_risk = rule_eval["risk_level"]
         app_needs_review = rule_eval["needs_review"]
@@ -381,7 +378,7 @@ async def get_applications(
             "missing_information": rule_eval["missing"]
         }
 
-        # Apply Filters
+        # --- Apply Filters ---
         if search and search.strip():
             q = search.lower().strip()
             if not (q in app_id.lower() or q in full_name.lower() or q in cust_id.lower() or q in str(credit_score)):
@@ -398,6 +395,36 @@ async def get_applications(
 
         if purpose and purpose.upper() != "ALL" and purpose.lower() not in loan_purpose.lower():
             continue
+
+        # Range Filters
+        if credit_score_range and credit_score_range.upper() != "ALL":
+            csr = credit_score_range.strip()
+            if csr == "<600" and not (credit_score < 600):
+                continue
+            elif csr == "600-699" and not (600 <= credit_score <= 699):
+                continue
+            elif csr == "700-749" and not (700 <= credit_score <= 749):
+                continue
+            elif csr == "750+" and not (credit_score >= 750):
+                continue
+
+        if loan_amount_range and loan_amount_range.upper() != "ALL":
+            lar = loan_amount_range.strip()
+            if lar == "<100000" and not (requested_amount < 100000):
+                continue
+            elif lar in ["100000-500000", "100k-500k"] and not (100000 <= requested_amount <= 500000):
+                continue
+            elif lar in [">500000", ">500k"] and not (requested_amount > 500000):
+                continue
+
+        if tenure_range and tenure_range.upper() != "ALL":
+            tr = tenure_range.strip()
+            if tr == "<12" and not (tenure < 12):
+                continue
+            elif tr == "12-36" and not (12 <= tenure <= 36):
+                continue
+            elif tr == ">36" and not (tenure > 36):
+                continue
 
         all_evaluated.append(record)
 
@@ -460,7 +487,7 @@ async def evaluate_loan(
     rule_eval = evaluate_app_rules(app, cust, customer_loans)
     final_decision = rule_eval["decision"]
 
-    # FIX: Persist updated decision back to loan_applications.csv
+    # Persist updated decision back to loan_applications.csv
     update_application_decision_in_csv(target_id, final_decision)
 
     groq_client = get_groq_client()
